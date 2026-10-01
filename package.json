@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "prebuild": "npm install --no-audit --no-fund"
   },
   "dependencies": {
     "next": "^15.5.0",
