@@ -1,0 +1,3 @@
+import {NextResponse} from "next/server";
+const API=process.env.ANALYSIS_API_URL;
+export async function GET(){if(!API)return NextResponse.json({error:"Analysis service is not configured."},{status:503});try{const r=await fetch(API.replace(/\/$/,"")+"/monitoring/history",{cache:"no-store"});return NextResponse.json(await r.json(),{status:r.status})}catch{return NextResponse.json({error:"Unable to reach the analysis service."},{status:502})}}
