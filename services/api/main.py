@@ -275,8 +275,6 @@ def monitoring_history():
     con.close()
     return {"runs":rows}
 
-@app.get("/health")
-def health(): return {"status":"ok","service":"analysis-api","version":"0.6.0"}
 @app.post("/profile")
 async def profile(file:UploadFile=File(...)):
     if not file.filename.lower().endswith(".csv"): raise HTTPException(400,"CSV required")
