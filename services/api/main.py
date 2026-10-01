@@ -91,7 +91,9 @@ class WhatIfRequest(BaseModel):
     task:Optional[str]="auto"
     changes:dict[str,Any]
 def frame(rows:list[dict[str,Any]]):
+    if not isinstance(rows,list): raise HTTPException(400,"Rows must be a list")
     if not rows: raise HTTPException(400,"No rows supplied")
+    if not all(isinstance(row,dict) for row in rows): raise HTTPException(400,"Every row must be an object")
     if len(rows)>MAX_ROWS: raise HTTPException(413,f"Dataset exceeds the configured row limit of {MAX_ROWS:,}")
     columns={str(k) for row in rows for k in row.keys()}
     if len(columns)>MAX_COLUMNS: raise HTTPException(413,f"Dataset exceeds the configured column limit of {MAX_COLUMNS:,}")
@@ -112,10 +114,14 @@ def ready():
     except Exception as exc:
         raise HTTPException(503,"Database is not ready") from exc
 def infer_task(y:pd.Series,requested:str|None):
+    if requested and requested not in {"auto","regression","classification"}:
+        raise HTTPException(400,"Task must be auto, regression, or classification")
     if requested and requested!="auto": return requested
     if pd.api.types.is_numeric_dtype(y) and y.nunique()>10: return "regression"
     return "classification"
 def build_preprocessor(X:pd.DataFrame):
+    if X.shape[1] == 0:
+        raise HTTPException(400,"At least one feature column is required")
     numeric=list(X.select_dtypes(include=np.number).columns)
     categorical=[c for c in X.columns if c not in numeric]
     prep=ColumnTransformer([("num",Pipeline([("impute",SimpleImputer(strategy="median")),("scale",StandardScaler())]),numeric),("cat",Pipeline([("impute",SimpleImputer(strategy="most_frequent")),("onehot",OneHotEncoder(handle_unknown="ignore"))]),categorical)])
@@ -164,7 +170,7 @@ def dataset_signature(rows:list[dict[str,Any]]):
 @app.post("/experiments")
 def save_experiment(req:ExperimentRequest):
     result=req.result
-    con=sqlite3.connect(DB_PATH)
+    con=db_connect()
     cur=con.execute("INSERT INTO experiments(created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature,report,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (datetime.now(timezone.utc).isoformat(),req.name or "Autopilot experiment",len(req.rows),len(req.rows[0]) if req.rows else 0,
          result.get("target"),result.get("task"),result.get("best_model"),result.get("best_score"),dataset_signature(req.rows),
@@ -174,7 +180,7 @@ def save_experiment(req:ExperimentRequest):
 
 @app.get("/experiments")
 def list_experiments():
-    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    con=db_connect();con.row_factory=sqlite3.Row
     rows=[dict(x) for x in con.execute("SELECT id,created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature,report FROM experiments ORDER BY id DESC LIMIT 50")]
     con.close();return {"experiments":rows}
 
@@ -186,7 +192,7 @@ def compare_experiments(ids:str):
         raise HTTPException(400,"Experiment ids must be comma-separated integers")
     if not wanted or len(wanted)>10: raise HTTPException(400,"Provide 1 to 10 experiment ids")
     placeholders=",".join("?" for _ in wanted)
-    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    con=db_connect();con.row_factory=sqlite3.Row
     rows=[dict(x) for x in con.execute(f"SELECT id,created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature FROM experiments WHERE id IN ({placeholders}) ORDER BY id DESC",wanted)]
     con.close()
     return {"experiments":rows,"count":len(rows)}
@@ -243,7 +249,7 @@ def save_dataset_version(req:DatasetVersionRequest):
     if not rows: raise HTTPException(400,"No rows supplied")
     columns=list(rows[0].keys())
     signature=dataset_signature(rows)
-    con=sqlite3.connect(DB_PATH)
+    con=db_connect()
     cur=con.execute("INSERT INTO dataset_versions(created_at,name,signature,rows_used,columns_used,columns_json,payload) VALUES(?,?,?,?,?,?,?)",
         (datetime.now(timezone.utc).isoformat(),req.name or "Dataset version",signature,len(rows),len(columns),json.dumps(columns),json.dumps(rows,default=str)))
     con.commit();vid=cur.lastrowid;con.close()
@@ -251,7 +257,7 @@ def save_dataset_version(req:DatasetVersionRequest):
 
 @app.get("/datasets/versions")
 def list_dataset_versions():
-    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    con=db_connect();con.row_factory=sqlite3.Row
     rows=[dict(x) for x in con.execute("SELECT id,created_at,name,signature,rows_used,columns_used,columns_json FROM dataset_versions ORDER BY id DESC LIMIT 50")]
     con.close()
     for x in rows: x["columns"]=json.loads(x.pop("columns_json"))
@@ -259,7 +265,7 @@ def list_dataset_versions():
 
 @app.get("/datasets/versions/{version_id}")
 def get_dataset_version(version_id:int):
-    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    con=db_connect();con.row_factory=sqlite3.Row
     row=con.execute("SELECT * FROM dataset_versions WHERE id=?",(version_id,)).fetchone();con.close()
     if not row: raise HTTPException(404,"Dataset version not found")
     item=dict(row);item["columns"]=json.loads(item.pop("columns_json"));item["rows"]=json.loads(item.pop("payload"));return item
@@ -271,21 +277,21 @@ class DriftVersionRequest(BaseModel):
 
 @app.post("/drift/version")
 def drift_version(req:DriftVersionRequest):
-    con=sqlite3.connect(DB_PATH);row=con.execute("SELECT payload FROM dataset_versions WHERE id=?",(req.baseline_version_id,)).fetchone();con.close()
+    con=db_connect();row=con.execute("SELECT payload FROM dataset_versions WHERE id=?",(req.baseline_version_id,)).fetchone();con.close()
     if not row: raise HTTPException(404,"Baseline dataset version not found")
     baseline=json.loads(row[0])
     return drift(DriftRequest(baseline_rows=baseline,current_rows=req.current_rows,threshold=req.threshold,baseline_version_id=req.baseline_version_id))
 
 @app.get("/experiments/{experiment_id}")
 def get_experiment(experiment_id:int):
-    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    con=db_connect();con.row_factory=sqlite3.Row
     row=con.execute("SELECT * FROM experiments WHERE id=?",(experiment_id,)).fetchone();con.close()
     if not row: raise HTTPException(404,"Experiment not found")
     item=dict(row);item["payload"]=json.loads(item["payload"]);return item
 
 @app.get("/monitoring/history")
 def monitoring_history():
-    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    con=db_connect();con.row_factory=sqlite3.Row
     rows=[dict(x) for x in con.execute("SELECT id,created_at,baseline_version_id,baseline_signature,current_signature,baseline_rows,current_rows,threshold,status,alerts,report FROM monitoring_runs ORDER BY id DESC LIMIT 50")]
     con.close()
     return {"runs":rows}
@@ -327,6 +333,8 @@ def train(req:TrainRequest):
 @app.post("/anomalies")
 def anomalies(req:AnomalyRequest):
     df=frame(req.rows)
+    if req.contamination is not None and not np.isfinite(float(req.contamination)):
+        raise HTTPException(400,"Contamination must be a finite number")
     numeric=df.select_dtypes(include=np.number).columns.tolist()
     if len(numeric)<1: raise HTTPException(400,"At least one numeric column is required for anomaly detection")
     X=df[numeric].replace([np.inf,-np.inf],np.nan).fillna(df[numeric].median())
@@ -341,6 +349,9 @@ def anomalies(req:AnomalyRequest):
 @app.post("/forecast")
 def forecast(req:ForecastRequest):
     df=frame(req.rows)
+    periods=int(req.periods or 7)
+    if periods < 1 or periods > 365:
+        raise HTTPException(400,"Forecast periods must be between 1 and 365")
     if req.date_column not in df.columns or req.value_column not in df.columns: raise HTTPException(400,"Date or value column not found")
     series=pd.DataFrame({"date":pd.to_datetime(df[req.date_column],errors="coerce"),"value":pd.to_numeric(df[req.value_column],errors="coerce")}).dropna().sort_values("date")
     if len(series)<10: raise HTTPException(400,"At least 10 valid time-series observations are required")
@@ -416,7 +427,16 @@ def automl(req:AutoMLRequest):
     warnings_list=leakage_warnings(df,target)
     prep,numeric,categorical=build_preprocessor(X)
     strat=y if task=="classification" and y.value_counts().min()>=2 else None
-    test_size=min(max(float(req.test_size or .2),.1),.4)
+    test_size=float(req.test_size or .2)
+    if not np.isfinite(test_size) or test_size < .1 or test_size > .4:
+        raise HTTPException(400,"test_size must be between 0.1 and 0.4")
+    if task=="classification" and strat is not None:
+        class_count=int(y.nunique())
+        test_count=max(int(np.ceil(len(y)*test_size)),class_count)
+        if len(y)-test_count < class_count:
+            strat=None
+        else:
+            test_size=test_count/len(y)
     Xtr,Xte,ytr,yte=train_test_split(X,y,test_size=test_size,random_state=42,stratify=strat)
     if task=="regression":
         models=[("Linear Regression",LinearRegression()),("Random Forest",RandomForestRegressor(n_estimators=180,random_state=42,n_jobs=-1)),("Gradient Boosting",GradientBoostingRegressor(random_state=42))]
@@ -463,7 +483,7 @@ def register_model(req:ModelRegisterRequest):
     result=req.result
     if not result.get("best_model"): raise HTTPException(400,"A completed AutoML result is required")
     sig=dataset_signature(req.rows)
-    con=sqlite3.connect(DB_PATH)
+    con=db_connect()
     cur=con.execute("INSERT INTO model_registry(created_at,name,dataset_signature,rows_used,target,task,model_name,score,metrics_json,feature_importance_json,status,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         (datetime.now(timezone.utc).isoformat(),req.name or "Autopilot model",sig,len(req.rows),result.get("target"),result.get("task"),result["best_model"],result.get("best_score"),json.dumps(next((m.get("metrics",{}) for m in result.get("models",[]) if m.get("model")==result["best_model"]),{})),json.dumps(result.get("feature_importance",[])),"candidate",json.dumps(result)))
     con.commit(); mid=cur.lastrowid;con.close()
@@ -471,13 +491,13 @@ def register_model(req:ModelRegisterRequest):
 
 @app.get("/models")
 def list_models():
-    con=sqlite3.connect(DB_PATH); con.row_factory=sqlite3.Row
+    con=db_connect(); con.row_factory=sqlite3.Row
     rows=[dict(x) for x in con.execute("SELECT id,created_at,name,dataset_signature,rows_used,target,task,model_name,score,status FROM model_registry ORDER BY id DESC LIMIT 50").fetchall()]
     con.close(); return {"models":rows}
 
 @app.post("/models/{model_id}/promote")
 def promote_model(model_id:int):
-    con=sqlite3.connect(DB_PATH); row=con.execute("SELECT id FROM model_registry WHERE id=?",(model_id,)).fetchone()
+    con=db_connect(); row=con.execute("SELECT id FROM model_registry WHERE id=?",(model_id,)).fetchone()
     if not row: con.close(); raise HTTPException(404,"Model version not found")
     con.execute("UPDATE model_registry SET status='candidate' WHERE status='production'")
     con.execute("UPDATE model_registry SET status='production' WHERE id=?",(model_id,))
@@ -656,6 +676,10 @@ class DriftRequest(BaseModel):
 @app.post("/drift")
 def drift(req:DriftRequest):
     base=frame(req.baseline_rows);cur=frame(req.current_rows)
+    if req.threshold is None or not np.isfinite(float(req.threshold)) or float(req.threshold) <= 0:
+        raise HTTPException(400,"Drift threshold must be a positive finite number")
+    if float(req.threshold) > 10:
+        raise HTTPException(400,"Drift threshold must not exceed 10")
     shared=[c for c in base.columns if c in cur.columns]
     if not shared: raise HTTPException(400,"Baseline and current datasets have no shared columns")
     results=[]
@@ -679,7 +703,7 @@ def drift(req:DriftRequest):
     report=f"{alerts} of {len(results)} shared features exceeded the configured drift threshold."
     baseline_sig=dataset_signature(req.baseline_rows)
     current_sig=dataset_signature(req.current_rows)
-    con=sqlite3.connect(DB_PATH)
+    con=db_connect()
     cur_db=con.execute("INSERT INTO monitoring_runs(created_at,baseline_version_id,baseline_signature,current_signature,baseline_rows,current_rows,threshold,status,alerts,report,features_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (datetime.now(timezone.utc).isoformat(),req.baseline_version_id,baseline_sig,current_sig,len(base),len(cur),req.threshold,status,alerts,report,json.dumps(results)))
     con.commit();run_id=cur_db.lastrowid;con.close()
@@ -694,7 +718,7 @@ class RetrainRequest(BaseModel):
 def retrain(req:RetrainRequest):
     result=automl(AutoMLRequest(rows=req.rows,target=req.target,task=req.task))
     sig=dataset_signature(req.rows)
-    con=sqlite3.connect(DB_PATH)
+    con=db_connect()
     cur=con.execute("INSERT INTO model_registry(created_at,name,dataset_signature,rows_used,target,task,model_name,score,metrics_json,feature_importance_json,status,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         (datetime.now(timezone.utc).isoformat(),"Retrained · "+str(result["best_model"]),sig,len(req.rows),result.get("target"),result.get("task"),result["best_model"],result.get("best_score"),json.dumps(next((m.get("metrics",{}) for m in result.get("models",[]) if m.get("model")==result["best_model"]),{})),json.dumps(result.get("feature_importance",[])),"candidate",json.dumps(result)))
     con.commit();mid=cur.lastrowid;con.close()
