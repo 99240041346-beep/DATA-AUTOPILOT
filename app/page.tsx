@@ -27,8 +27,8 @@ type Dataset = {
 };
 
 const TABS = [
-  "Overview", "Data Profile", "EDA", "AI insights", "ML Lab",
-  "Explainability", "What-if", "Autopilot", "Monitoring",
+  "Mission", "Overview", "Data Profile", "EDA", "AI insights", "ML Lab",
+  "Explainability", "Prediction", "What-if", "Autopilot", "Monitoring",
   "Reports", "Models", "History"
 ];
 
@@ -162,6 +162,8 @@ export default function Home() {
   const [experiments, setExperiments] = useState<any[]>([]);
   const [selectedExperiments, setSelectedExperiments] = useState<number[]>([]);
   const [comparison, setComparison] = useState<any>(null);
+  const [predictionResult, setPredictionResult] = useState<any>(null);
+  const [statusMessage, setStatusMessage] = useState("");
 
   const chart = useMemo(
     () =>
@@ -181,14 +183,10 @@ export default function Home() {
   };
 
   const run = async (fn: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await fn();
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setBusy(false);
-    }
+    setBusy(true); setStatusMessage("Running analysis…");
+    try { await fn(); setStatusMessage("Analysis completed."); }
+    catch (error) { setStatusMessage(error instanceof Error ? error.message : "Analysis could not be completed."); }
+    finally { setBusy(false); }
   };
 
   const runAutoML = () =>
@@ -262,6 +260,17 @@ export default function Home() {
           run_forecast: true,
         })
       );
+    });
+
+  const runPrediction = () =>
+    run(async () => {
+      if (!dataset || !target) return;
+      const changes: Record<string, string> = {};
+      dataset.columns.filter((c) => c.name !== target && c.type === "number").forEach((col) => {
+        const element = document.getElementById(`pred-${col.name}`) as HTMLInputElement | null;
+        if (element && element.value !== "") changes[col.name] = element.value;
+      });
+      setPredictionResult(await postJSON("/api/what-if", { rows: dataset.raw, target, task: "auto", changes }));
     });
 
   const runWhatIf = () =>
@@ -429,6 +438,26 @@ export default function Home() {
             </Card>
           ))}
         </div>
+
+        {tab === "Mission" && (
+          <div className="space-y-6">
+            <Card>
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div><p className="text-xs font-bold uppercase tracking-widest text-cyan-300">AUTONOMOUS MISSION</p>
+                <h2 className="mt-1 text-3xl font-black">One dataset. One mission.</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Automatically profile, clean, train, detect anomalies, forecast, explain and summarize the dataset.</p></div>
+                <ActionButton disabled={busy} onClick={runAutopilot}>{busy ? "Running mission…" : "Run Full Autopilot"}</ActionButton>
+              </div>
+              {statusMessage && <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-400">{statusMessage}</p>}
+            </Card>
+            <div className="grid gap-6 lg:grid-cols-3">
+              <Card><p className="text-xs uppercase tracking-widest text-slate-500">Dataset quality</p><p className="mt-2 text-4xl font-black">{Math.max(0,100-Math.round((dataset.columns.reduce((s,c)=>s+c.missing,0)/Math.max(1,dataset.rows*dataset.cols))*100))}/100</p><p className="mt-2 text-sm text-slate-500">Baseline missing-cell quality score.</p></Card>
+              <Card><p className="text-xs uppercase tracking-widest text-slate-500">Target</p><select value={target} onChange={e=>setTarget(e.target.value)} className="mt-3 w-full rounded-xl border border-slate-800 bg-slate-950 p-3 text-sm"><option value="">Auto-detect</option>{dataset.columns.map(c=><option key={c.name} value={c.name}>{c.name}</option>)}</select></Card>
+              <Card><p className="text-xs uppercase tracking-widest text-slate-500">Detected signals</p><div className="mt-3 space-y-2 text-sm text-slate-300"><div>Numeric: <b>{dataset.numeric.length}</b></div><div>Date-like: <b>{dataset.columns.filter(c=>/date|time|year|month|day/i.test(c.name)).length}</b></div><div>Missing: <b>{dataset.columns.reduce((s,c)=>s+c.missing,0)}</b></div></div></Card>
+            </div>
+            {autopilotResult && <Card><h3 className="text-xl font-bold">Mission result</h3><div className="mt-5 grid gap-3 md:grid-cols-3"><Stat label="Task" value={autopilotResult.task}/><Stat label="Target" value={autopilotResult.target}/><Stat label="Best model" value={autopilotResult.best_model}/></div><div className="mt-5 rounded-2xl border border-cyan-900/60 bg-cyan-950/20 p-5"><p className="text-xs uppercase tracking-widest text-cyan-300">Decision summary</p><p className="mt-2 leading-7 text-slate-200">{autopilotResult.report}</p></div><div className="mt-5 grid gap-3 md:grid-cols-2 lg:grid-cols-3">{(autopilotResult.stages||[]).map((stage:any)=><div key={stage.id} className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4"><div className="flex justify-between"><b>{stage.label}</b><span className={stage.status==="completed"?"text-emerald-300":"text-amber-300"}>{stage.status}</span></div><p className="mt-2 text-xs text-slate-500">{stage.details}</p></div>)}</div></Card>}
+          </div>
+        )}
 
         {tab === "Overview" && (
           <div className="grid gap-6 lg:grid-cols-2">
@@ -645,6 +674,14 @@ export default function Home() {
             </div>
             {explainResult && <ResultBox result={explainResult} />}
           </Card>
+        )}
+
+        {tab === "Prediction" && (
+          <Card><p className="text-xs uppercase tracking-widest text-cyan-300">PREDICTION STUDIO</p><h3 className="mt-1 text-2xl font-black">Generate a prediction</h3><p className="mt-2 text-sm text-slate-500">Provide feature values and compare the scenario against the current baseline record.</p>
+          <div className="mt-5 grid gap-4 md:grid-cols-2">{dataset.columns.filter(c=>c.name!==target&&c.type==="number").slice(0,12).map(c=><label key={c.name} className="text-sm text-slate-400">{c.name}<input id={`pred-${c.name}`} defaultValue={c.mean??""} type="number" className="mt-2 w-full rounded-xl border border-slate-800 bg-slate-950 p-3 text-slate-200"/></label>)}</div>
+          <ActionButton disabled={busy||!target} onClick={runPrediction}>{busy?"Predicting…":"Generate prediction"}</ActionButton>
+          {predictionResult&&<div className="mt-6 grid gap-4 md:grid-cols-3"><Stat label="Baseline" value={predictionResult.baseline}/><Stat label="Scenario" value={predictionResult.scenario}/><Stat label="Impact" value={predictionResult.impact}/></div>}
+          {!target&&<p className="mt-3 text-xs text-amber-300">Choose a target in Mission first.</p>}</Card>
         )}
 
         {tab === "What-if" && (
