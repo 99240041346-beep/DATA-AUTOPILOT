@@ -22,7 +22,7 @@ import os
 from datetime import datetime, timezone
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
-app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.6.0")
+app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.7.0")
 DB_PATH=os.getenv("AUTOPILOT_DB_PATH","autopilot.db")
 def init_db():
     con=sqlite3.connect(DB_PATH)
@@ -34,6 +34,12 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
         signature TEXT NOT NULL, rows_used INTEGER, columns_used INTEGER,
         columns_json TEXT NOT NULL, payload TEXT NOT NULL)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS model_registry (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
+        dataset_signature TEXT NOT NULL, rows_used INTEGER, target TEXT, task TEXT,
+        model_name TEXT NOT NULL, score REAL, metrics_json TEXT NOT NULL,
+        feature_importance_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'candidate',
+        payload TEXT NOT NULL)""")
     con.execute("""CREATE TABLE IF NOT EXISTS monitoring_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
         baseline_version_id INTEGER, baseline_signature TEXT, current_signature TEXT,
@@ -409,6 +415,36 @@ def automl(req:AutoMLRequest):
     report=(f"Autopilot detected {task} with '{target}' as the target. It evaluated {len(results)} models and selected {best_name} using the holdout score. "
             + (f"Data-quality warnings: {len(warnings_list)}." if warnings_list else "No high-risk leakage pattern was detected by the baseline checks."))
     return {"task":task,"target":target,"target_candidates":candidates[:8],"rows_used":len(df),"models":results,"best_model":best_name,"best_score":round(float(best_score),4),"feature_importance":importance,"warnings":warnings_list,"report":report}
+
+class ModelRegisterRequest(BaseModel):
+    name:Optional[str]="Autopilot model"
+    rows:list[dict[str,Any]]
+    result:dict[str,Any]
+
+@app.post("/models")
+def register_model(req:ModelRegisterRequest):
+    result=req.result
+    if not result.get("best_model"): raise HTTPException(400,"A completed AutoML result is required")
+    sig=dataset_signature(req.rows)
+    con=sqlite3.connect(DB_PATH)
+    cur=con.execute("INSERT INTO model_registry(created_at,name,dataset_signature,rows_used,target,task,model_name,score,metrics_json,feature_importance_json,status,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(),req.name or "Autopilot model",sig,len(req.rows),result.get("target"),result.get("task"),result["best_model"],result.get("best_score"),json.dumps(next((m.get("metrics",{}) for m in result.get("models",[]) if m.get("model")==result["best_model"]),{})),json.dumps(result.get("feature_importance",[])),"candidate",json.dumps(result)))
+    con.commit(); mid=cur.lastrowid;con.close()
+    return {"id":mid,"status":"candidate","dataset_signature":sig,"model_name":result["best_model"],"score":result.get("best_score")}
+
+@app.get("/models")
+def list_models():
+    con=sqlite3.connect(DB_PATH); con.row_factory=sqlite3.Row
+    rows=[dict(x) for x in con.execute("SELECT id,created_at,name,dataset_signature,rows_used,target,task,model_name,score,status FROM model_registry ORDER BY id DESC LIMIT 50").fetchall()]
+    con.close(); return {"models":rows}
+
+@app.post("/models/{model_id}/promote")
+def promote_model(model_id:int):
+    con=sqlite3.connect(DB_PATH); row=con.execute("SELECT id FROM model_registry WHERE id=?",(model_id,)).fetchone()
+    if not row: con.close(); raise HTTPException(404,"Model version not found")
+    con.execute("UPDATE model_registry SET status='candidate' WHERE status='production'")
+    con.execute("UPDATE model_registry SET status='production' WHERE id=?",(model_id,))
+    con.commit();con.close(); return {"id":model_id,"status":"production"}
 
 
 @app.post("/explain")
