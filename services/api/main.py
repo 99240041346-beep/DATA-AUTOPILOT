@@ -22,7 +22,7 @@ import os
 from datetime import datetime, timezone
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
-app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.5.0")
+app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.6.0")
 DB_PATH=os.getenv("AUTOPILOT_DB_PATH","autopilot.db")
 def init_db():
     con=sqlite3.connect(DB_PATH)
@@ -34,6 +34,12 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
         signature TEXT NOT NULL, rows_used INTEGER, columns_used INTEGER,
         columns_json TEXT NOT NULL, payload TEXT NOT NULL)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS monitoring_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+        baseline_version_id INTEGER, baseline_signature TEXT, current_signature TEXT,
+        baseline_rows INTEGER, current_rows INTEGER, threshold REAL,
+        status TEXT NOT NULL, alerts INTEGER NOT NULL, report TEXT NOT NULL,
+        features_json TEXT NOT NULL)""")
     con.commit();con.close()
 init_db()
 app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_methods=["*"],allow_headers=["*"])
@@ -191,8 +197,15 @@ def get_experiment(experiment_id:int):
     if not row: raise HTTPException(404,"Experiment not found")
     item=dict(row);item["payload"]=json.loads(item["payload"]);return item
 
+@app.get("/monitoring/history")
+def monitoring_history():
+    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    rows=[dict(x) for x in con.execute("SELECT id,created_at,baseline_version_id,baseline_signature,current_signature,baseline_rows,current_rows,threshold,status,alerts,report FROM monitoring_runs ORDER BY id DESC LIMIT 50")]
+    con.close()
+    return {"runs":rows}
+
 @app.get("/health")
-def health(): return {"status":"ok","service":"analysis-api","version":"0.5.0"}
+def health(): return {"status":"ok","service":"analysis-api","version":"0.6.0"}
 @app.post("/profile")
 async def profile(file:UploadFile=File(...)):
     if not file.filename.lower().endswith(".csv"): raise HTTPException(400,"CSV required")
@@ -538,4 +551,12 @@ def drift(req:DriftRequest):
         results.append({"feature":str(col),"drift":round(float(magnitude),4),"metric":metric,"status":"alert" if magnitude>=req.threshold else "stable"})
     results.sort(key=lambda x:x["drift"],reverse=True)
     alerts=sum(x["status"]=="alert" for x in results)
-    return {"baseline_rows":len(base),"current_rows":len(cur),"threshold":req.threshold,"alerts":alerts,"features":results,"status":"alert" if alerts else "stable","report":f"{alerts} of {len(results)} shared features exceeded the configured drift threshold."}
+    status="alert" if alerts else "stable"
+    report=f"{alerts} of {len(results)} shared features exceeded the configured drift threshold."
+    baseline_sig=dataset_signature(req.baseline_rows)
+    current_sig=dataset_signature(req.current_rows)
+    con=sqlite3.connect(DB_PATH)
+    cur_db=con.execute("INSERT INTO monitoring_runs(created_at,baseline_version_id,baseline_signature,current_signature,baseline_rows,current_rows,threshold,status,alerts,report,features_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(),None,baseline_sig,current_sig,len(base),len(cur),req.threshold,status,alerts,report,json.dumps(results)))
+    con.commit();run_id=cur_db.lastrowid;con.close()
+    return {"id":run_id,"baseline_rows":len(base),"current_rows":len(cur),"threshold":req.threshold,"alerts":alerts,"features":results,"status":status,"report":report}
