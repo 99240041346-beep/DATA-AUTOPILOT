@@ -18,11 +18,12 @@ from sklearn.ensemble import IsolationForest
 import warnings
 import sqlite3
 import json
+import os
 from datetime import datetime, timezone
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
-app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.3.0")
-DB_PATH="autopilot.db"
+app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.4.0")
+DB_PATH=os.getenv("AUTOPILOT_DB_PATH","autopilot.db")
 def init_db():
     con=sqlite3.connect(DB_PATH);con.execute("""CREATE TABLE IF NOT EXISTS experiments (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
@@ -120,6 +121,19 @@ def list_experiments():
     con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
     rows=[dict(x) for x in con.execute("SELECT id,created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature,report FROM experiments ORDER BY id DESC LIMIT 50")]
     con.close();return {"experiments":rows}
+
+@app.get("/experiments/compare")
+def compare_experiments(ids:str):
+    try:
+        wanted=[int(x.strip()) for x in ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(400,"Experiment ids must be comma-separated integers")
+    if not wanted or len(wanted)>10: raise HTTPException(400,"Provide 1 to 10 experiment ids")
+    placeholders=",".join("?" for _ in wanted)
+    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    rows=[dict(x) for x in con.execute(f"SELECT id,created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature FROM experiments WHERE id IN ({placeholders}) ORDER BY id DESC",wanted)]
+    con.close()
+    return {"experiments":rows,"count":len(rows)}
 
 @app.get("/experiments/{experiment_id}")
 def get_experiment(experiment_id:int):
