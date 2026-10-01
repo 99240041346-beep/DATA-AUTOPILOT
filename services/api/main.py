@@ -133,11 +133,11 @@ def automl(req:AutoMLRequest):
     if best_pipe is None: raise HTTPException(400,"No model could be trained on this dataset")
     importance=[]
     try:
-        transformed=best_pipe.named_steps["prep"].get_feature_names_out()
         scoring="r2" if task=="regression" else "f1_weighted"
         perm=permutation_importance(best_pipe,Xte,yte,n_repeats=3,random_state=42,n_jobs=-1,scoring=scoring)
         order=np.argsort(perm.importances_mean)[::-1][:10]
-        importance=[{"feature":str(transformed[i]),"importance":round(float(max(perm.importances_mean[i],0)),5)} for i in order if perm.importances_mean[i]>0]
+        feature_names=list(X.columns)
+        importance=[{"feature":str(feature_names[i]),"importance":round(float(max(perm.importances_mean[i],0)),5)} for i in order if i<len(feature_names) and perm.importances_mean[i]>0]
     except Exception:
         importance=[]
     report=(f"Autopilot detected {task} with '{target}' as the target. It evaluated {len(results)} models and selected {best_name} using the holdout score. "
