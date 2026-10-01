@@ -16,9 +16,19 @@ from sklearn.metrics import mean_squared_error
 from sklearn.inspection import permutation_importance
 from sklearn.ensemble import IsolationForest
 import warnings
+import sqlite3
+import json
+from datetime import datetime, timezone
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
-app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.2.0")
+app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.3.0")
+DB_PATH="autopilot.db"
+def init_db():
+    con=sqlite3.connect(DB_PATH);con.execute("""CREATE TABLE IF NOT EXISTS experiments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
+        rows_used INTEGER, columns_used INTEGER, target TEXT, task TEXT, best_model TEXT,
+        best_score REAL, dataset_signature TEXT, report TEXT, payload TEXT NOT NULL)""");con.commit();con.close()
+init_db()
 app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_methods=["*"],allow_headers=["*"])
 class TrainRequest(BaseModel):
     rows:list[dict[str,Any]]
@@ -84,6 +94,40 @@ def leakage_warnings(df:pd.DataFrame,target:str):
             if pd.notna(corr) and abs(corr)>=0.98:
                 warnings_list.append(f"{c}: near-perfect correlation with target ({corr:.3f})")
     return warnings_list
+class ExperimentRequest(BaseModel):
+    name:Optional[str]="Autopilot experiment"
+    rows:list[dict[str,Any]]
+    result:dict[str,Any]
+
+def dataset_signature(rows:list[dict[str,Any]]):
+    raw=json.dumps(rows,sort_keys=True,default=str,separators=(",",":"))
+    import hashlib
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+@app.post("/experiments")
+def save_experiment(req:ExperimentRequest):
+    result=req.result
+    con=sqlite3.connect(DB_PATH)
+    cur=con.execute("INSERT INTO experiments(created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature,report,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(),req.name or "Autopilot experiment",len(req.rows),len(req.rows[0]) if req.rows else 0,
+         result.get("target"),result.get("task"),result.get("best_model"),result.get("best_score"),dataset_signature(req.rows),
+         result.get("report",""),json.dumps(result,default=str)))
+    con.commit();eid=cur.lastrowid;con.close()
+    return {"id":eid,"saved":True}
+
+@app.get("/experiments")
+def list_experiments():
+    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    rows=[dict(x) for x in con.execute("SELECT id,created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature,report FROM experiments ORDER BY id DESC LIMIT 50")]
+    con.close();return {"experiments":rows}
+
+@app.get("/experiments/{experiment_id}")
+def get_experiment(experiment_id:int):
+    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    row=con.execute("SELECT * FROM experiments WHERE id=?",(experiment_id,)).fetchone();con.close()
+    if not row: raise HTTPException(404,"Experiment not found")
+    item=dict(row);item["payload"]=json.loads(item["payload"]);return item
+
 @app.get("/health")
 def health(): return {"status":"ok","service":"analysis-api","version":"0.2.0"}
 @app.post("/profile")
