@@ -14,6 +14,7 @@ from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, Grad
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import mean_squared_error
 from sklearn.inspection import permutation_importance
+from sklearn.ensemble import IsolationForest
 import warnings
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
@@ -23,6 +24,14 @@ class TrainRequest(BaseModel):
     rows:list[dict[str,Any]]
     target:str
     task:Optional[str]="auto"
+class AnomalyRequest(BaseModel):
+    rows:list[dict[str,Any]]
+    contamination:Optional[float]=0.05
+class ForecastRequest(BaseModel):
+    rows:list[dict[str,Any]]
+    date_column:str
+    value_column:str
+    periods:Optional[int]=7
 class CleanRequest(BaseModel):
     rows:list[dict[str,Any]]
     target:Optional[str]=None
@@ -100,6 +109,43 @@ def train(req:TrainRequest):
     Xtr,Xte,ytr,yte=train_test_split(X,y,test_size=.2,random_state=42,stratify=strat)
     pipe=Pipeline([("prep",prep),("model",model)]);pipe.fit(Xtr,ytr);pred=pipe.predict(Xte)
     return {"task":task,"target":req.target,"model":"RandomForestClassifier","metrics":{"accuracy":round(float(accuracy_score(yte,pred)),4),"f1_weighted":round(float(f1_score(yte,pred,average="weighted")),4)},"classes":[str(x) for x in sorted(y.unique(),key=str)],"rows_used":len(df),"features":X.columns.tolist()}
+
+@app.post("/anomalies")
+def anomalies(req:AnomalyRequest):
+    df=frame(req.rows)
+    numeric=df.select_dtypes(include=np.number).columns.tolist()
+    if len(numeric)<1: raise HTTPException(400,"At least one numeric column is required for anomaly detection")
+    X=df[numeric].replace([np.inf,-np.inf],np.nan).fillna(df[numeric].median())
+    if len(X)<10: raise HTTPException(400,"At least 10 rows are required for anomaly detection")
+    contamination=min(max(float(req.contamination or .05),.01),.25)
+    model=IsolationForest(n_estimators=200,contamination=contamination,random_state=42)
+    labels=model.fit_predict(X); scores=-model.decision_function(X)
+    result=df.copy();result["anomaly"]=labels==-1;result["anomaly_score"]=np.round(scores,5)
+    flagged=result[result["anomaly"]].sort_values("anomaly_score",ascending=False).head(100)
+    return {"rows_analyzed":len(df),"numeric_features":numeric,"anomalies_found":int((labels==-1).sum()),"anomaly_rate":round(float((labels==-1).mean()),4),"records":flagged.replace({np.nan:None}).to_dict(orient="records")}
+
+@app.post("/forecast")
+def forecast(req:ForecastRequest):
+    df=frame(req.rows)
+    if req.date_column not in df.columns or req.value_column not in df.columns: raise HTTPException(400,"Date or value column not found")
+    series=pd.DataFrame({"date":pd.to_datetime(df[req.date_column],errors="coerce"),"value":pd.to_numeric(df[req.value_column],errors="coerce")}).dropna().sort_values("date")
+    if len(series)<10: raise HTTPException(400,"At least 10 valid time-series observations are required")
+    grouped=series.groupby("date",as_index=False)["value"].mean()
+    values=grouped["value"].to_numpy(dtype=float)
+    periods=min(max(int(req.periods or 7),1),90)
+    window=min(14,len(values))
+    recent=values[-window:]
+    x=np.arange(window);coef=np.polyfit(x,recent,1) if window>=2 else np.array([0,recent.mean()])
+    slope,intercept=float(coef[0]),float(coef[1])
+    last_date=grouped["date"].iloc[-1]
+    deltas=grouped["date"].diff().dropna().dt.total_seconds()/86400
+    step=float(deltas.median()) if len(deltas) else 1.0
+    step=max(step,.0001)
+    predictions=[]
+    for i in range(1,periods+1):
+        predictions.append({"date":(last_date+pd.to_timedelta(step*i,unit="D")).isoformat(),"forecast":round(float(slope*(window-1+i)+intercept),4)})
+    direction="rising" if slope>0 else "falling" if slope<0 else "stable"
+    return {"date_column":req.date_column,"value_column":req.value_column,"observations":len(grouped),"frequency_days":round(step,3),"trend":direction,"trend_per_step":round(slope,5),"forecast":predictions}
 
 @app.post("/clean",response_model=CleanResponse)
 def clean_data(req:CleanRequest):
