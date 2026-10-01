@@ -48,7 +48,8 @@ def init_db():
         features_json TEXT NOT NULL)""")
     con.commit();con.close()
 init_db()
-ALLOWED_ORIGINS=[x.strip() for x in os.getenv("ALLOWED_ORIGINS","http://localhost:3000").split(",") if x.strip()]\napp.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_methods=["GET","POST","OPTIONS"],allow_headers=["Content-Type"],max_age=600)
+ALLOWED_ORIGINS=[x.strip() for x in os.getenv("ALLOWED_ORIGINS","http://localhost:3000").split(",") if x.strip()]
+app.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_methods=["GET","POST","OPTIONS"],allow_headers=["Content-Type"],max_age=600)
 class TrainRequest(BaseModel):
     rows:list[dict[str,Any]]
     target:str
