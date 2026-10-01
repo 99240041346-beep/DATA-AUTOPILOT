@@ -599,8 +599,9 @@ def autopilot(req:AutopilotRequest):
 
     stages.append({"id":"profile","label":"Profile","status":"completed","details":f"{len(df)} rows · {len(df.columns)} columns"})
     cleaned=clean_data(CleanRequest(rows=req.rows,target=req.target))
-    clean_rows=cleaned.rows
-    clean_summary=cleaned.summary
+    # clean_data returns a JSON-compatible dict when called directly from the endpoint.
+    clean_rows=cleaned["rows"]
+    clean_summary=cleaned["summary"]
     stages.append({"id":"clean","label":"Clean","status":"completed","details":f"{clean_summary['duplicates_removed']} duplicates removed · {sum(clean_summary['missing_after'].values())} missing remaining"})
 
     auto=automl(AutoMLRequest(rows=clean_rows,target=req.target,task=req.task))
