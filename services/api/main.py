@@ -239,6 +239,49 @@ def automl(req:AutoMLRequest):
             + (f"Data-quality warnings: {len(warnings_list)}." if warnings_list else "No high-risk leakage pattern was detected by the baseline checks."))
     return {"task":task,"target":target,"target_candidates":candidates[:8],"rows_used":len(df),"models":results,"best_model":best_name,"best_score":round(float(best_score),4),"feature_importance":importance,"warnings":warnings_list,"report":report}
 
+
+@app.post("/explain")
+def explain(req:AutoMLRequest):
+    df=frame(req.rows)
+    candidates=target_candidates(df); target=req.target or (candidates[0] if candidates else None)
+    if not target or target not in df.columns: raise HTTPException(400,"Choose a usable target column")
+    df=df.dropna(subset=[target]).copy()
+    if len(df)<12: raise HTTPException(400,"At least 12 usable rows are required for explainability")
+    y=df[target]; task=infer_task(y,req.task); X=df.drop(columns=[target])
+    prep,numeric,categorical=build_preprocessor(X)
+    if task=="regression": model=RandomForestRegressor(n_estimators=180,random_state=42,n_jobs=-1)
+    else: model=RandomForestClassifier(n_estimators=180,random_state=42,n_jobs=-1,class_weight="balanced")
+    pipe=Pipeline([("prep",prep),("model",model)])
+    pipe.fit(X,y)
+    scoring="r2" if task=="regression" else "f1_weighted"
+    Xeval=X.tail(min(80,len(X))); yeval=y.loc[Xeval.index]
+    try:
+        perm=permutation_importance(pipe,Xeval,yeval,n_repeats=3,random_state=42,n_jobs=-1,scoring=scoring)
+        order=np.argsort(perm.importances_mean)[::-1][:8]
+        global_drivers=[{"feature":str(X.columns[i]),"importance":round(float(max(perm.importances_mean[i],0)),5)} for i in order if i<len(X.columns)]
+    except Exception: global_drivers=[]
+    row=X.iloc[-1:].copy(); pred=pipe.predict(row)[0]
+    local=[]
+    base_pred=float(pred) if isinstance(pred,(int,float,np.integer,np.floating)) else str(pred)
+    for col in X.columns:
+        altered=row.copy()
+        if pd.api.types.is_numeric_dtype(X[col]):
+            altered[col]=X[col].median()
+        else:
+            mode=X[col].mode(dropna=True)
+            if len(mode): altered[col]=mode.iloc[0]
+        try:
+            alt=pipe.predict(altered)[0]
+            if task=="regression":
+                effect=float(pred)-float(alt)
+                local.append({"feature":str(col),"effect":round(effect,5)})
+            else:
+                changed=str(alt)!=str(pred)
+                local.append({"feature":str(col),"effect":1 if changed else 0})
+        except Exception: pass
+    local=sorted(local,key=lambda x:abs(float(x["effect"])),reverse=True)[:8]
+    return {"target":target,"task":task,"prediction":base_pred,"row_index":int(df.index[-1]),"global_drivers":global_drivers,"local_drivers":local,"explanation":f"The selected model predicts {base_pred} for the latest usable record. The driver list shows which source features have the strongest measured influence in the evaluation sample."}
+
 @app.post("/what-if")
 def what_if(req:WhatIfRequest):
     impact=0.0;details={}
