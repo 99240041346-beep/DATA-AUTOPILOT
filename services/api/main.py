@@ -188,7 +188,7 @@ def drift_version(req:DriftVersionRequest):
     con=sqlite3.connect(DB_PATH);row=con.execute("SELECT payload FROM dataset_versions WHERE id=?",(req.baseline_version_id,)).fetchone();con.close()
     if not row: raise HTTPException(404,"Baseline dataset version not found")
     baseline=json.loads(row[0])
-    return drift(DriftRequest(baseline_rows=baseline,current_rows=req.current_rows,threshold=req.threshold))
+    return drift(DriftRequest(baseline_rows=baseline,current_rows=req.current_rows,threshold=req.threshold,baseline_version_id=req.baseline_version_id))
 
 @app.get("/experiments/{experiment_id}")
 def get_experiment(experiment_id:int):
@@ -528,6 +528,7 @@ class DriftRequest(BaseModel):
     baseline_rows:list[dict[str,Any]]
     current_rows:list[dict[str,Any]]
     threshold:Optional[float]=0.2
+    baseline_version_id:Optional[int]=None
 
 @app.post("/drift")
 def drift(req:DriftRequest):
@@ -557,6 +558,6 @@ def drift(req:DriftRequest):
     current_sig=dataset_signature(req.current_rows)
     con=sqlite3.connect(DB_PATH)
     cur_db=con.execute("INSERT INTO monitoring_runs(created_at,baseline_version_id,baseline_signature,current_signature,baseline_rows,current_rows,threshold,status,alerts,report,features_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        (datetime.now(timezone.utc).isoformat(),None,baseline_sig,current_sig,len(base),len(cur),req.threshold,status,alerts,report,json.dumps(results)))
+        (datetime.now(timezone.utc).isoformat(),req.baseline_version_id,baseline_sig,current_sig,len(base),len(cur),req.threshold,status,alerts,report,json.dumps(results)))
     con.commit();run_id=cur_db.lastrowid;con.close()
     return {"id":run_id,"baseline_rows":len(base),"current_rows":len(cur),"threshold":req.threshold,"alerts":alerts,"features":results,"status":status,"report":report}
