@@ -22,13 +22,19 @@ import os
 from datetime import datetime, timezone
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
-app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.4.0")
+app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.5.0")
 DB_PATH=os.getenv("AUTOPILOT_DB_PATH","autopilot.db")
 def init_db():
-    con=sqlite3.connect(DB_PATH);con.execute("""CREATE TABLE IF NOT EXISTS experiments (
+    con=sqlite3.connect(DB_PATH)
+    con.execute("""CREATE TABLE IF NOT EXISTS experiments (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
         rows_used INTEGER, columns_used INTEGER, target TEXT, task TEXT, best_model TEXT,
-        best_score REAL, dataset_signature TEXT, report TEXT, payload TEXT NOT NULL)""");con.commit();con.close()
+        best_score REAL, dataset_signature TEXT, report TEXT, payload TEXT NOT NULL)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS dataset_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
+        signature TEXT NOT NULL, rows_used INTEGER, columns_used INTEGER,
+        columns_json TEXT NOT NULL, payload TEXT NOT NULL)""")
+    con.commit();con.close()
 init_db()
 app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_methods=["*"],allow_headers=["*"])
 class TrainRequest(BaseModel):
@@ -100,6 +106,10 @@ class ExperimentRequest(BaseModel):
     rows:list[dict[str,Any]]
     result:dict[str,Any]
 
+class DatasetVersionRequest(BaseModel):
+    name:Optional[str]="Dataset version"
+    rows:list[dict[str,Any]]
+
 def dataset_signature(rows:list[dict[str,Any]]):
     raw=json.dumps(rows,sort_keys=True,default=str,separators=(",",":"))
     import hashlib
@@ -135,6 +145,45 @@ def compare_experiments(ids:str):
     con.close()
     return {"experiments":rows,"count":len(rows)}
 
+@app.post("/datasets/versions")
+def save_dataset_version(req:DatasetVersionRequest):
+    rows=req.rows
+    if not rows: raise HTTPException(400,"No rows supplied")
+    columns=list(rows[0].keys())
+    signature=dataset_signature(rows)
+    con=sqlite3.connect(DB_PATH)
+    cur=con.execute("INSERT INTO dataset_versions(created_at,name,signature,rows_used,columns_used,columns_json,payload) VALUES(?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(),req.name or "Dataset version",signature,len(rows),len(columns),json.dumps(columns),json.dumps(rows,default=str)))
+    con.commit();vid=cur.lastrowid;con.close()
+    return {"id":vid,"saved":True,"signature":signature,"rows_used":len(rows),"columns_used":len(columns)}
+
+@app.get("/datasets/versions")
+def list_dataset_versions():
+    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    rows=[dict(x) for x in con.execute("SELECT id,created_at,name,signature,rows_used,columns_used,columns_json FROM dataset_versions ORDER BY id DESC LIMIT 50")]
+    con.close()
+    for x in rows: x["columns"]=json.loads(x.pop("columns_json"))
+    return {"versions":rows}
+
+@app.get("/datasets/versions/{version_id}")
+def get_dataset_version(version_id:int):
+    con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
+    row=con.execute("SELECT * FROM dataset_versions WHERE id=?",(version_id,)).fetchone();con.close()
+    if not row: raise HTTPException(404,"Dataset version not found")
+    item=dict(row);item["columns"]=json.loads(item.pop("columns_json"));item["rows"]=json.loads(item.pop("payload"));return item
+
+class DriftVersionRequest(BaseModel):
+    baseline_version_id:int
+    current_rows:list[dict[str,Any]]
+    threshold:Optional[float]=0.2
+
+@app.post("/drift/version")
+def drift_version(req:DriftVersionRequest):
+    con=sqlite3.connect(DB_PATH);row=con.execute("SELECT payload FROM dataset_versions WHERE id=?",(req.baseline_version_id,)).fetchone();con.close()
+    if not row: raise HTTPException(404,"Baseline dataset version not found")
+    baseline=json.loads(row[0])
+    return drift(DriftRequest(baseline_rows=baseline,current_rows=req.current_rows,threshold=req.threshold))
+
 @app.get("/experiments/{experiment_id}")
 def get_experiment(experiment_id:int):
     con=sqlite3.connect(DB_PATH);con.row_factory=sqlite3.Row
@@ -143,7 +192,7 @@ def get_experiment(experiment_id:int):
     item=dict(row);item["payload"]=json.loads(item["payload"]);return item
 
 @app.get("/health")
-def health(): return {"status":"ok","service":"analysis-api","version":"0.2.0"}
+def health(): return {"status":"ok","service":"analysis-api","version":"0.5.0"}
 @app.post("/profile")
 async def profile(file:UploadFile=File(...)):
     if not file.filename.lower().endswith(".csv"): raise HTTPException(400,"CSV required")
