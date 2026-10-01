@@ -26,10 +26,27 @@ type Dataset = {
   raw: Record<string, string | number | null>[];
 };
 
-const TABS = [
-  "Mission", "Overview", "Data Profile", "EDA", "AI insights", "ML Lab",
-  "Explainability", "Prediction", "What-if", "Autopilot", "Monitoring",
-  "Reports", "Models", "History"
+const NAV_GROUPS = [
+  { label: "WORKSPACE", items: [
+    ["Mission", "◈", "Autonomous command center"],
+    ["Overview", "⌂", "Dataset overview"],
+    ["Data Profile", "▤", "Schema & quality"],
+    ["EDA", "◫", "Explore the data"],
+    ["AI insights", "✦", "Anomalies & forecasts"],
+  ]},
+  { label: "INTELLIGENCE", items: [
+    ["ML Lab", "◎", "Train & compare models"],
+    ["Explainability", "⌁", "Understand predictions"],
+    ["Prediction", "◆", "Prediction studio"],
+    ["What-if", "↯", "Decision simulation"],
+  ]},
+  { label: "OPERATIONS", items: [
+    ["Autopilot", "⚡", "Run the full pipeline"],
+    ["Monitoring", "◉", "Drift & data health"],
+    ["Models", "◇", "Model registry"],
+    ["History", "◴", "Experiments"],
+    ["Reports", "⇩", "Export & reporting"],
+  ]},
 ];
 
 function parseCSV(text: string): string[][] {
@@ -173,6 +190,7 @@ export default function Home() {
   const [comparison, setComparison] = useState<any>(null);
   const [predictionResult, setPredictionResult] = useState<any>(null);
   const [statusMessage, setStatusMessage] = useState("");
+  const [mobileNav, setMobileNav] = useState(false);
 
   const chart = useMemo(
     () =>
@@ -403,36 +421,64 @@ export default function Home() {
 
   return (
     <main className="min-h-screen grid-bg">
-      <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-[#07111f]/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <Brand />
-          <div className="flex gap-2">
-            <label className="cursor-pointer rounded-xl bg-cyan-300 px-4 py-2 text-sm font-bold text-slate-950">
-              <input type="file" accept=".csv,.txt" className="hidden" onChange={upload} />
-              Replace dataset
-            </label>
-            <ActionButton secondary onClick={() => setDataset(null)}>Reset</ActionButton>
+      <div className="mx-auto flex max-w-[1600px]">
+        <aside className={`fixed inset-y-0 left-0 z-40 w-72 border-r border-slate-800 bg-[#06101d]/98 p-5 backdrop-blur-xl transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${mobileNav ? "translate-x-0" : "-translate-x-full"}`}>
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between">
+              <Brand />
+              <button className="rounded-lg border border-slate-800 px-2 py-1 text-slate-400 lg:hidden" onClick={() => setMobileNav(false)}>×</button>
+            </div>
+            <div className="mt-8 rounded-2xl border border-cyan-400/10 bg-cyan-400/5 p-4">
+              <p className="text-[10px] font-bold uppercase tracking-[.2em] text-cyan-300">ACTIVE DATASET</p>
+              <p className="mt-2 truncate text-sm font-bold text-slate-200">{dataset.name}</p>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-xl bg-slate-950/60 p-2"><span className="text-slate-500">Rows</span><br/><b>{dataset.rows.toLocaleString()}</b></div>
+                <div className="rounded-xl bg-slate-950/60 p-2"><span className="text-slate-500">Cols</span><br/><b>{dataset.cols}</b></div>
+              </div>
+            </div>
+            <nav className="mt-7 flex-1 space-y-6 overflow-y-auto pr-1">
+              {NAV_GROUPS.map((group) => (
+                <div key={group.label}>
+                  <p className="mb-2 px-3 text-[10px] font-bold tracking-[.2em] text-slate-600">{group.label}</p>
+                  <div className="space-y-1">
+                    {group.items.map(([name, icon, hint]) => (
+                      <button key={name} title={hint} onClick={() => { setTab(name); setMobileNav(false); }}
+                        className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${tab === name ? "bg-cyan-300 font-bold text-slate-950 shadow-lg shadow-cyan-300/10" : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"}`}>
+                        <span className="grid h-7 w-7 place-items-center rounded-lg bg-slate-950/40 text-sm">{icon}</span>
+                        <span className="min-w-0 flex-1"><span className="block">{name}</span><span className={`block truncate text-[10px] ${tab === name ? "text-slate-700" : "text-slate-600"}`}>{hint}</span></span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </nav>
+            <div className="border-t border-slate-800 pt-4">
+              <div className="flex gap-2">
+                <label className="flex-1 cursor-pointer rounded-xl bg-cyan-300 px-3 py-2.5 text-center text-xs font-black text-slate-950">
+                  <input type="file" accept=".csv,.txt" className="hidden" onChange={upload} />Replace dataset
+                </label>
+                <button onClick={() => setDataset(null)} className="rounded-xl border border-slate-800 px-3 text-xs text-slate-400">Reset</button>
+              </div>
+              <p className="mt-3 text-center text-[10px] text-slate-600">DATA AUTOPILOT · Autonomous Data Science</p>
+            </div>
           </div>
-        </div>
-      </header>
-
-      <section className="mx-auto max-w-7xl px-6 py-8">
-        <div className="mb-5 flex gap-2 overflow-x-auto pb-1">
-          {TABS.map((name) => (
-            <button
-              key={name}
-              onClick={() => setTab(name)}
-              className={
-                "whitespace-nowrap rounded-xl px-4 py-2 text-sm " +
-                (tab === name
-                  ? "bg-cyan-300 font-bold text-slate-950"
-                  : "border border-slate-800 text-slate-400")
-              }
-            >
-              {name}
-            </button>
-          ))}
-        </div>
+        </aside>
+        {mobileNav && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-black/60 lg:hidden" onClick={() => setMobileNav(false)} />}
+        <section className="min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8">
+          <div className="mb-5 flex items-center justify-between gap-3 lg:hidden">
+            <button onClick={() => setMobileNav(true)} className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-sm text-slate-300">☰ Menu</button>
+            <span className="truncate text-xs text-slate-500">{dataset.name}</span>
+          </div>
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/70 pb-5">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[.2em] text-cyan-300">DATA AUTOPILOT / {tab}</p>
+              <h2 className="mt-1 text-2xl font-black">{tab === "Mission" ? "Autonomous Command Center" : tab}</h2>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${busy ? "bg-amber-300 animate-pulse" : "bg-emerald-400"}`} />
+              <span className="text-xs text-slate-500">{busy ? "Processing" : "System ready"}</span>
+            </div>
+          </div>
 
         <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[
@@ -903,7 +949,8 @@ export default function Home() {
             </div>
           </Card>
         )}
-      </section>
+        </section>
+      </div>
     </main>
   );
 }
