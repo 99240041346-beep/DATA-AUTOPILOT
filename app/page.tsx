@@ -112,6 +112,15 @@ async function postJSON(path: string, body: unknown) {
   return response.json();
 }
 
+function Stat({label, value}: {label: string; value: unknown}) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4">
+      <p className="text-xs uppercase tracking-widest text-slate-500">{label}</p>
+      <p className="mt-2 truncate text-lg font-bold text-slate-100">{String(value ?? "—")}</p>
+    </div>
+  );
+}
+
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`glass rounded-3xl p-6 ${className}`}>{children}</div>;
 }
