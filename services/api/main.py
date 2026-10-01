@@ -22,10 +22,18 @@ import os
 from datetime import datetime, timezone
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
-app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.7.1")
+app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.8.0")
 DB_PATH=os.getenv("AUTOPILOT_DB_PATH","autopilot.db")
+MAX_ROWS=int(os.getenv("MAX_ROWS","50000"))
+MAX_COLUMNS=int(os.getenv("MAX_COLUMNS","200"))
+MAX_UPLOAD_BYTES=int(os.getenv("MAX_UPLOAD_BYTES",str(20*1024*1024)))
+DB_TIMEOUT=float(os.getenv("AUTOPILOT_DB_TIMEOUT","30"))
+def db_connect():
+    con=sqlite3.connect(DB_PATH,timeout=DB_TIMEOUT)
+    con.execute("PRAGMA busy_timeout = 30000")
+    return con
 def init_db():
-    con=sqlite3.connect(DB_PATH)
+    con=db_connect()
     con.execute("""CREATE TABLE IF NOT EXISTS experiments (
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, name TEXT NOT NULL,
         rows_used INTEGER, columns_used INTEGER, target TEXT, task TEXT, best_model TEXT,
@@ -50,6 +58,9 @@ def init_db():
 init_db()
 ALLOWED_ORIGINS=[x.strip() for x in os.getenv("ALLOWED_ORIGINS","http://localhost:3000").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_methods=["GET","POST","OPTIONS"],allow_headers=["Content-Type"],max_age=600)
+@app.exception_handler(ValueError)
+async def value_error_handler(request, exc):
+    raise HTTPException(400,"Invalid request data")
 class TrainRequest(BaseModel):
     rows:list[dict[str,Any]]
     target:str
@@ -81,9 +92,13 @@ class WhatIfRequest(BaseModel):
     changes:dict[str,Any]
 def frame(rows:list[dict[str,Any]]):
     if not rows: raise HTTPException(400,"No rows supplied")
-    if len(rows)>int(os.getenv("MAX_ROWS","50000")): raise HTTPException(413,"Dataset exceeds the configured row limit")
-    if len(rows[0])>int(os.getenv("MAX_COLUMNS","200")): raise HTTPException(413,"Dataset exceeds the configured column limit")
-    return pd.DataFrame(rows)
+    if len(rows)>MAX_ROWS: raise HTTPException(413,f"Dataset exceeds the configured row limit of {MAX_ROWS:,}")
+    columns={str(k) for row in rows for k in row.keys()}
+    if len(columns)>MAX_COLUMNS: raise HTTPException(413,f"Dataset exceeds the configured column limit of {MAX_COLUMNS:,}")
+    if len(columns)==0: raise HTTPException(400,"Rows must contain at least one column")
+    df=pd.DataFrame(rows)
+    df=df.replace([np.inf,-np.inf],np.nan)
+    return df
 
 @app.get("/health")
 def health():
@@ -92,7 +107,7 @@ def health():
 @app.get("/ready")
 def ready():
     try:
-        con=sqlite3.connect(DB_PATH); con.execute("SELECT 1"); con.close()
+        con=db_connect(); con.execute("SELECT 1"); con.close()
         return {"status":"ready","database":"ok","version":app.version}
     except Exception as exc:
         raise HTTPException(503,"Database is not ready") from exc
@@ -277,8 +292,17 @@ def monitoring_history():
 
 @app.post("/profile")
 async def profile(file:UploadFile=File(...)):
-    if not file.filename.lower().endswith(".csv"): raise HTTPException(400,"CSV required")
-    df=pd.read_csv(BytesIO(await file.read()))
+    filename=(file.filename or "").lower()
+    if not filename.endswith(".csv"): raise HTTPException(400,"CSV required")
+    data=await file.read()
+    if len(data)>MAX_UPLOAD_BYTES: raise HTTPException(413,f"CSV exceeds the configured upload limit of {MAX_UPLOAD_BYTES//(1024*1024)} MB")
+    try:
+        df=pd.read_csv(BytesIO(data))
+    except Exception as exc:
+        raise HTTPException(400,"The uploaded CSV could not be parsed") from exc
+    if df.empty: raise HTTPException(400,"The uploaded CSV contains no data")
+    if len(df)>MAX_ROWS: raise HTTPException(413,f"CSV exceeds the configured row limit of {MAX_ROWS:,}")
+    if len(df.columns)>MAX_COLUMNS: raise HTTPException(413,f"CSV exceeds the configured column limit of {MAX_COLUMNS:,}")
     return {"rows":len(df),"columns":len(df.columns),"missing":int(df.isna().sum().sum()),"duplicates":int(df.duplicated().sum()),"numeric_columns":list(df.select_dtypes(include="number").columns),"describe":df.select_dtypes(include="number").describe().replace({np.nan:None}).to_dict()}
 @app.post("/train")
 def train(req:TrainRequest):
