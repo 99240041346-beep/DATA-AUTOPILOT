@@ -460,3 +460,33 @@ def autopilot(req:AutopilotRequest):
         "stages":stages,
     }
     return result
+
+
+class DriftRequest(BaseModel):
+    baseline_rows:list[dict[str,Any]]
+    current_rows:list[dict[str,Any]]
+    threshold:Optional[float]=0.2
+
+@app.post("/drift")
+def drift(req:DriftRequest):
+    base=frame(req.baseline_rows);cur=frame(req.current_rows)
+    shared=[c for c in base.columns if c in cur.columns]
+    if not shared: raise HTTPException(400,"Baseline and current datasets have no shared columns")
+    results=[]
+    for col in shared:
+        a=base[col]; b=cur[col]
+        if pd.api.types.is_numeric_dtype(a) and pd.api.types.is_numeric_dtype(b):
+            av=float(a.mean()) if len(a) else 0.0; bv=float(b.mean()) if len(b) else 0.0
+            scale=float(a.std()) if pd.notna(a.std()) and float(a.std())>1e-9 else max(abs(av),1.0)
+            magnitude=abs(bv-av)/scale
+            metric="standardized_mean_shift"
+        else:
+            ap=a.fillna("__missing__").astype(str).value_counts(normalize=True)
+            bp=b.fillna("__missing__").astype(str).value_counts(normalize=True)
+            cats=set(ap.index)|set(bp.index)
+            magnitude=0.5*sum(abs(float(ap.get(x,0))-float(bp.get(x,0))) for x in cats)
+            metric="total_variation"
+        results.append({"feature":str(col),"drift":round(float(magnitude),4),"metric":metric,"status":"alert" if magnitude>=req.threshold else "stable"})
+    results.sort(key=lambda x:x["drift"],reverse=True)
+    alerts=sum(x["status"]=="alert" for x in results)
+    return {"baseline_rows":len(base),"current_rows":len(cur),"threshold":req.threshold,"alerts":alerts,"features":results,"status":"alert" if alerts else "stable","report":f"{alerts} of {len(results)} shared features exceeded the configured drift threshold."}
