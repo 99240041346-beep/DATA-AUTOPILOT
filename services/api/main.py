@@ -22,7 +22,7 @@ import os
 from datetime import datetime, timezone
 from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score, f1_score
 
-app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.7.0")
+app=FastAPI(title="DATA AUTOPILOT Analysis API",version="0.7.1")
 DB_PATH=os.getenv("AUTOPILOT_DB_PATH","autopilot.db")
 def init_db():
     con=sqlite3.connect(DB_PATH)
@@ -48,7 +48,7 @@ def init_db():
         features_json TEXT NOT NULL)""")
     con.commit();con.close()
 init_db()
-app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_methods=["*"],allow_headers=["*"])
+ALLOWED_ORIGINS=[x.strip() for x in os.getenv("ALLOWED_ORIGINS","http://localhost:3000").split(",") if x.strip()]\napp.add_middleware(CORSMiddleware,allow_origins=ALLOWED_ORIGINS,allow_methods=["GET","POST","OPTIONS"],allow_headers=["Content-Type"],max_age=600)
 class TrainRequest(BaseModel):
     rows:list[dict[str,Any]]
     target:str
