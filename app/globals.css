@@ -1,0 +1,2 @@
+@import "tailwindcss";
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#07111f;color:#e6eef8;font-family:Inter,ui-sans-serif,system-ui,sans-serif}.grid-bg{background-image:linear-gradient(rgba(148,163,184,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.05) 1px,transparent 1px);background-size:28px 28px}.glass{background:rgba(12,25,43,.72);backdrop-filter:blur(16px);border:1px solid rgba(148,163,184,.12)}
