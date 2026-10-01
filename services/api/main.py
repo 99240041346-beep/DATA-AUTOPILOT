@@ -647,3 +647,18 @@ def drift(req:DriftRequest):
         (datetime.now(timezone.utc).isoformat(),req.baseline_version_id,baseline_sig,current_sig,len(base),len(cur),req.threshold,status,alerts,report,json.dumps(results)))
     con.commit();run_id=cur_db.lastrowid;con.close()
     return {"id":run_id,"baseline_rows":len(base),"current_rows":len(cur),"threshold":req.threshold,"alerts":alerts,"features":results,"status":status,"report":report}
+
+class RetrainRequest(BaseModel):
+    rows:list[dict[str,Any]]
+    target:Optional[str]=None
+    task:Optional[str]="auto"
+
+@app.post("/retrain")
+def retrain(req:RetrainRequest):
+    result=automl(AutoMLRequest(rows=req.rows,target=req.target,task=req.task))
+    sig=dataset_signature(req.rows)
+    con=sqlite3.connect(DB_PATH)
+    cur=con.execute("INSERT INTO model_registry(created_at,name,dataset_signature,rows_used,target,task,model_name,score,metrics_json,feature_importance_json,status,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(),"Retrained · "+str(result["best_model"]),sig,len(req.rows),result.get("target"),result.get("task"),result["best_model"],result.get("best_score"),json.dumps(next((m.get("metrics",{}) for m in result.get("models",[]) if m.get("model")==result["best_model"]),{})),json.dumps(result.get("feature_importance",[])),"candidate",json.dumps(result)))
+    con.commit();mid=cur.lastrowid;con.close()
+    return {"model_id":mid,"recommendation":"A new candidate model was trained from the supplied current dataset. Review its score and promote it when appropriate.","result":result}
