@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: data-autopilot-api
+    runtime: docker
+    rootDir: services/api
+    healthCheckPath: /health
+    plan: free
