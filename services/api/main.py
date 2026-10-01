@@ -81,7 +81,21 @@ class WhatIfRequest(BaseModel):
     changes:dict[str,Any]
 def frame(rows:list[dict[str,Any]]):
     if not rows: raise HTTPException(400,"No rows supplied")
+    if len(rows)>int(os.getenv("MAX_ROWS","50000")): raise HTTPException(413,"Dataset exceeds the configured row limit")
+    if len(rows[0])>int(os.getenv("MAX_COLUMNS","200")): raise HTTPException(413,"Dataset exceeds the configured column limit")
     return pd.DataFrame(rows)
+
+@app.get("/health")
+def health():
+    return {"status":"ok","service":"data-autopilot-api","version":app.version}
+
+@app.get("/ready")
+def ready():
+    try:
+        con=sqlite3.connect(DB_PATH); con.execute("SELECT 1"); con.close()
+        return {"status":"ready","database":"ok","version":app.version}
+    except Exception as exc:
+        raise HTTPException(503,"Database is not ready") from exc
 def infer_task(y:pd.Series,requested:str|None):
     if requested and requested!="auto": return requested
     if pd.api.types.is_numeric_dtype(y) and y.nunique()>10: return "regression"
