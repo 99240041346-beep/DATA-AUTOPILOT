@@ -27,3 +27,4 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python -c "from main import app; print(app.title)"
+      - run: pytest -q
