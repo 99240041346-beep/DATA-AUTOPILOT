@@ -23,6 +23,13 @@ class TrainRequest(BaseModel):
     rows:list[dict[str,Any]]
     target:str
     task:Optional[str]="auto"
+class CleanRequest(BaseModel):
+    rows:list[dict[str,Any]]
+    target:Optional[str]=None
+    z_threshold:Optional[float]=3.0
+class CleanResponse(BaseModel):
+    rows:list[dict[str,Any]]
+    summary:dict[str,Any]
 class AutoMLRequest(BaseModel):
     rows:list[dict[str,Any]]
     target:Optional[str]=None
@@ -93,6 +100,48 @@ def train(req:TrainRequest):
     Xtr,Xte,ytr,yte=train_test_split(X,y,test_size=.2,random_state=42,stratify=strat)
     pipe=Pipeline([("prep",prep),("model",model)]);pipe.fit(Xtr,ytr);pred=pipe.predict(Xte)
     return {"task":task,"target":req.target,"model":"RandomForestClassifier","metrics":{"accuracy":round(float(accuracy_score(yte,pred)),4),"f1_weighted":round(float(f1_score(yte,pred,average="weighted")),4)},"classes":[str(x) for x in sorted(y.unique(),key=str)],"rows_used":len(df),"features":X.columns.tolist()}
+
+@app.post("/clean",response_model=CleanResponse)
+def clean_data(req:CleanRequest):
+    df=frame(req.rows)
+    original_rows=len(df); original_cols=len(df.columns)
+    duplicates=int(df.duplicated().sum())
+    missing_before={str(k):int(v) for k,v in df.isna().sum().items() if v>0}
+    numeric=list(df.select_dtypes(include=np.number).columns)
+    outlier_counts={}
+    for col in numeric:
+        s=df[col].dropna()
+        if len(s)>=8 and float(s.std() or 0)>0:
+            z=((s-s.mean())/s.std()).abs()
+            outlier_counts[col]=int((z>float(req.z_threshold or 3)).sum())
+    cleaned=df.drop_duplicates().copy()
+    for col in numeric:
+        if cleaned[col].isna().any():
+            cleaned[col]=cleaned[col].fillna(cleaned[col].median())
+    for col in cleaned.columns:
+        if col not in numeric and cleaned[col].isna().any():
+            mode=cleaned[col].mode(dropna=True)
+            if len(mode): cleaned[col]=cleaned[col].fillna(mode.iloc[0])
+    missing_after={str(k):int(v) for k,v in cleaned.isna().sum().items() if v>0}
+    correlations=[]
+    if len(numeric)>=2:
+        corr=cleaned[numeric].corr()
+        for i,a in enumerate(numeric):
+            for b in numeric[i+1:]:
+                value=float(corr.loc[a,b])
+                if np.isfinite(value) and abs(value)>=.7:
+                    correlations.append({"feature_a":a,"feature_b":b,"correlation":round(value,3)})
+    summary={
+        "original_rows":original_rows,"cleaned_rows":len(cleaned),
+        "original_columns":original_cols,"duplicates_removed":duplicates,
+        "missing_before":missing_before,"missing_after":missing_after,
+        "outliers_by_column":outlier_counts,
+        "strong_correlations":sorted(correlations,key=lambda x:abs(x["correlation"]),reverse=True)[:20],
+        "numeric_features":numeric,
+        "categorical_features":[str(x) for x in cleaned.columns if x not in numeric],
+        "cleaning_actions":["removed exact duplicate rows","filled numeric missing values with median","filled categorical missing values with mode"]
+    }
+    return {"rows":cleaned.replace({np.nan:None}).to_dict(orient="records"),"summary":summary}
 
 @app.post("/automl")
 def automl(req:AutoMLRequest):
