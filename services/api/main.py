@@ -116,6 +116,10 @@ class DatasetVersionRequest(BaseModel):
     name:Optional[str]="Dataset version"
     rows:list[dict[str,Any]]
 
+class AskRequest(BaseModel):
+    rows:list[dict[str,Any]]
+    question:str
+
 def dataset_signature(rows:list[dict[str,Any]]):
     raw=json.dumps(rows,sort_keys=True,default=str,separators=(",",":"))
     import hashlib
@@ -150,6 +154,52 @@ def compare_experiments(ids:str):
     rows=[dict(x) for x in con.execute(f"SELECT id,created_at,name,rows_used,columns_used,target,task,best_model,best_score,dataset_signature FROM experiments WHERE id IN ({placeholders}) ORDER BY id DESC",wanted)]
     con.close()
     return {"experiments":rows,"count":len(rows)}
+
+@app.post("/ask")
+def ask(req:AskRequest):
+    df=frame(req.rows)
+    q=req.question.strip().lower()
+    if not q: raise HTTPException(400,"Ask a data question")
+    numeric=df.select_dtypes(include=np.number).columns.tolist()
+    missing=int(df.isna().sum().sum())
+    if any(x in q for x in ["how many rows","number of rows","row count","rows"]):
+        answer=f"The dataset contains {len(df):,} rows across {len(df.columns):,} columns."
+        return {"answer":answer,"intent":"shape","insights":[{"label":"Rows","value":len(df)},{"label":"Columns","value":len(df.columns)}]}
+    if "missing" in q or "null" in q or "empty" in q:
+        top=df.isna().sum().sort_values(ascending=False)
+        items=[{"feature":str(k),"missing":int(v)} for k,v in top.items() if v>0][:10]
+        answer=f"There are {missing:,} missing cells in total."
+        return {"answer":answer,"intent":"missingness","insights":items}
+    if any(x in q for x in ["average","mean","avg"]):
+        matches=[c for c in numeric if c.lower() in q]
+        cols=matches or numeric[:5]
+        vals=[{"feature":c,"mean":round(float(df[c].mean()),4)} for c in cols if df[c].notna().any()]
+        answer="Average values: "+"; ".join(f"{x['feature']} = {x['mean']}" for x in vals)+"."
+        return {"answer":answer,"intent":"mean","insights":vals}
+    if any(x in q for x in ["highest","maximum","max","largest","top"]):
+        vals=[{"feature":c,"max":round(float(df[c].max()),4)} for c in numeric if df[c].notna().any()]
+        vals=sorted(vals,key=lambda x:x["max"],reverse=True)[:8]
+        answer="Highest observed numeric values: "+"; ".join(f"{x['feature']} = {x['max']}" for x in vals)+"."
+        return {"answer":answer,"intent":"max","insights":vals}
+    if any(x in q for x in ["lowest","minimum","min","smallest"]):
+        vals=[{"feature":c,"min":round(float(df[c].min()),4)} for c in numeric if df[c].notna().any()]
+        vals=sorted(vals,key=lambda x:x["min"])[:8]
+        answer="Lowest observed numeric values: "+"; ".join(f"{x['feature']} = {x['min']}" for x in vals)+"."
+        return {"answer":answer,"intent":"min","insights":vals}
+    if "correlation" in q or "correlated" in q or "relationship" in q:
+        if len(numeric)<2: raise HTTPException(400,"At least two numeric columns are required for correlation analysis")
+        corr=df[numeric].corr()
+        pairs=[]
+        for i,a in enumerate(numeric):
+            for b in numeric[i+1:]:
+                v=corr.loc[a,b]
+                if pd.notna(v): pairs.append({"feature_a":a,"feature_b":b,"correlation":round(float(v),4)})
+        pairs=sorted(pairs,key=lambda x:abs(x["correlation"]),reverse=True)[:8]
+        answer="Strongest numeric relationships: "+"; ".join(f"{x['feature_a']} ↔ {x['feature_b']} ({x['correlation']})" for x in pairs)+"."
+        return {"answer":answer,"intent":"correlation","insights":pairs}
+    if "column" in q or "feature" in q:
+        return {"answer":"Columns: "+", ".join(map(str,df.columns))+".","intent":"columns","insights":[{"feature":str(x)} for x in df.columns]}
+    return {"answer":f"I analyzed {len(df):,} rows and {len(df.columns):,} columns. Try asking about rows, missing values, averages, highest/lowest values, correlations, or specific columns.","intent":"help","insights":[{"numeric_columns":len(numeric)},{"missing_cells":missing}]}
 
 @app.post("/datasets/versions")
 def save_dataset_version(req:DatasetVersionRequest):
