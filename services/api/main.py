@@ -357,7 +357,7 @@ def forecast(req:ForecastRequest):
     if len(series)<10: raise HTTPException(400,"At least 10 valid time-series observations are required")
     grouped=series.groupby("date",as_index=False)["value"].mean()
     values=grouped["value"].to_numpy(dtype=float)
-    periods=min(max(int(req.periods or 7),1),90)
+    periods=min(max(int(req.periods or 7),1),365)
     window=min(14,len(values))
     recent=values[-window:]
     x=np.arange(window);coef=np.polyfit(x,recent,1) if window>=2 else np.array([0,recent.mean()])
